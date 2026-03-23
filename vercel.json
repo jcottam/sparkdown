@@ -1,12 +1,3 @@
 {
-  "rewrites": [
-    {
-      "source": "/tools/markdown-to-html",
-      "destination": "/index.html"
-    },
-    {
-      "source": "/tools/markdown-to-html/:path*",
-      "destination": "/:path*"
-    }
-  ]
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }
