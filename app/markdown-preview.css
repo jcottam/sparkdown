@@ -1,0 +1,126 @@
+/* Markdown preview styles */
+.markdown-preview h1,
+.markdown-preview h2 {
+  @apply pb-2 border-b mb-4 mt-6 font-semibold;
+}
+
+.markdown-preview h1 {
+  @apply text-3xl;
+}
+
+.markdown-preview h2 {
+  @apply text-2xl;
+}
+
+.markdown-preview h3 {
+  @apply text-xl font-semibold mt-6 mb-4;
+}
+
+.markdown-preview h4 {
+  @apply text-lg font-semibold mt-4 mb-2;
+}
+
+.markdown-preview p {
+  @apply mb-4 leading-relaxed;
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+  @apply mb-4 pl-8;
+}
+
+.markdown-preview ul {
+  @apply list-disc;
+}
+
+.markdown-preview ol {
+  @apply list-decimal;
+}
+
+.markdown-preview li {
+  @apply mt-1;
+}
+
+.markdown-preview ul:has(> li > input[type="checkbox"]) {
+  @apply list-none pl-0;
+}
+
+.markdown-preview li:has(> input[type="checkbox"]) {
+  @apply flex items-baseline gap-2;
+}
+
+.markdown-preview li > input[type="checkbox"] {
+  @apply mt-0.5 shrink-0;
+}
+
+.markdown-preview table {
+  @apply border-collapse w-full mb-4;
+}
+
+.markdown-preview table th {
+  @apply font-semibold px-3 py-1.5 border bg-muted;
+}
+
+.markdown-preview table td {
+  @apply px-3 py-1.5 border;
+}
+
+.markdown-preview code {
+  @apply px-1.5 py-0.5 text-sm bg-muted rounded font-mono;
+}
+
+.markdown-preview pre {
+  @apply p-4 overflow-auto text-sm leading-relaxed rounded-md mb-4 border;
+}
+
+.markdown-preview pre code {
+  @apply block p-0 bg-transparent border-0;
+}
+
+.markdown-preview blockquote {
+  @apply pl-4 text-muted-foreground border-l-4 mb-4;
+}
+
+.markdown-preview a {
+  @apply text-primary hover:underline;
+}
+
+.markdown-preview hr {
+  @apply my-6 border-t;
+}
+
+.markdown-preview strong {
+  @apply font-semibold;
+}
+
+.markdown-preview img {
+  @apply max-w-full;
+}
+
+/* Shiki dual-theme support */
+.markdown-preview .shiki {
+  @apply p-4 overflow-auto text-sm leading-relaxed rounded-md mb-4 border;
+}
+
+.markdown-preview .shiki code {
+  @apply font-mono text-sm p-0 bg-transparent border-0;
+}
+
+.markdown-preview .shiki,
+.markdown-preview .shiki span {
+  color: var(--shiki-light);
+  background-color: var(--shiki-light-bg);
+}
+
+.dark .markdown-preview .shiki {
+  background-color: var(--shiki-dark-bg) !important;
+}
+
+.dark .markdown-preview .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: transparent !important;
+}
+
+.dark .markdown-preview .shiki code {
+  background-color: transparent !important;
+}

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="200 100 200 200" width="32" height="32">
+  <defs>
+    <mask id="cutout">
+      <rect x="0" y="0" width="1000" height="1000" fill="white" />
+      <path d="M300 167.84a32.16 32.16 0 11-31.58 26 32.45 32.45 0 0131.58-26z" fill="black" />
+    </mask>
+  </defs>
+  <style>
+    path {
+      stroke:#222;
+    }
+    .circle {
+      fill: none;
+    }
+    @media (prefers-color-scheme: dark) {
+      path {
+        stroke: #ddd;
+      }
+    }
+  </style>
+  <path mask="url(#cutout)" d="M378.67 219.14H221.33m174.36-12.76H204.31m191.38-12.76H204.31m174.36-12.76H221.33M280.86 278.67V121.33m12.76 174.36V104.31m12.76 191.38V104.31m12.76 174.36V121.33" stroke-linecap="round" stroke-width="6"/>
+  <path class="circle" d="M300 167.84a32.16 32.16 0 11-31.58 26 32.45 32.45 0 0131.58-26z" stroke-width="4"/>
+</svg>
