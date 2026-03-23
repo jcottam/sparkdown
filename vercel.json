@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/tools/markdown-to-html",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/tools/markdown-to-html/:path*",
+      "destination": "/:path*"
+    }
+  ]
+}
