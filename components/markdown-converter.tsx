@@ -79,9 +79,21 @@ import {
   Edit,
   Lock,
   FileDown,
+  Highlighter as HighlighterIcon,
 } from "lucide-react";
 import { THEMES, SHIKI_EXPORT_CSS, KATEX_CSS, MERMAID_SCRIPT, PDF_PRINT_CSS } from "@/lib/themes";
 import { createShareLink, decodeShareLink, type TTLOption } from "@/lib/share-utils";
+import { HighlightToolbar } from "@/components/highlight-toolbar";
+import { HighlightsPanel } from "@/components/highlights-panel";
+import { HighlightSummary } from "@/components/highlight-summary";
+import {
+  type Highlight,
+  createTextFragment,
+  saveHighlights,
+  loadHighlights,
+  clearHighlights,
+  applyHighlightsToDOM,
+} from "@/lib/highlight-utils";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -254,6 +266,15 @@ export default function MarkdownConverter() {
   const [shareTTL, setShareTTL] = useState<TTLOption>("none");
   const [pendingPasswordPrompt, setPendingPasswordPrompt] = useState<string | null>(null);
   const [passwordInput, setPasswordInput] = useState("");
+
+  // Highlights system
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
+  const [highlightToolbar, setHighlightToolbar] = useState<{
+    visible: boolean;
+    position: { x: number; y: number };
+    selection: Selection | null;
+  }>({ visible: false, position: { x: 0, y: 0 }, selection: null });
 
   const highlighterRef = useRef<Highlighter | null>(null);
   const renderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -501,6 +522,10 @@ export default function MarkdownConverter() {
           const result = decodeShareLink(compressed, false);
           if (result.success && result.payload) {
             setInput(result.payload.content);
+            // Load shared highlights if present
+            if (result.payload.highlights && result.payload.highlights.length > 0) {
+              setHighlights(result.payload.highlights);
+            }
             window.history.replaceState(null, '', window.location.pathname);
             toast("Loaded shared document");
           } else if (result.error === "expired") {
@@ -514,6 +539,12 @@ export default function MarkdownConverter() {
       }
     }
 
+    // Load highlights from localStorage
+    const savedHighlights = loadHighlights();
+    if (savedHighlights.length > 0) {
+      setHighlights(savedHighlights);
+    }
+
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (e: MediaQueryListEvent) => {
       if (!localStorage.getItem("theme")) {
@@ -524,6 +555,129 @@ export default function MarkdownConverter() {
     setMounted(true);
     return () => mql.removeEventListener("change", handler);
   }, []);
+
+  // Apply highlights to rendered HTML
+  useEffect(() => {
+    if (!previewRef.current || !renderedHtml) return;
+    
+    // Small delay to ensure DOM is updated
+    const timer = setTimeout(() => {
+      if (previewRef.current) {
+        applyHighlightsToDOM(previewRef.current, highlights);
+      }
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [renderedHtml, highlights]);
+
+  // Save highlights to localStorage when they change
+  useEffect(() => {
+    if (mounted) {
+      saveHighlights(highlights);
+    }
+  }, [highlights, mounted]);
+
+  // Handle text selection in preview for highlight toolbar
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+
+    function handleSelectionChange() {
+      if (!preview) return;
+      
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setHighlightToolbar({ visible: false, position: { x: 0, y: 0 }, selection: null });
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      const container = range.commonAncestorContainer;
+      
+      // Check if selection is within preview
+      const isInPreview = preview.contains(container.nodeType === Node.TEXT_NODE ? container.parentNode : container);
+      if (!isInPreview) {
+        setHighlightToolbar({ visible: false, position: { x: 0, y: 0 }, selection: null });
+        return;
+      }
+
+      // Don't show toolbar if selecting within existing highlight or toolbar
+      const parentElement = container.nodeType === Node.TEXT_NODE ? container.parentElement : container as HTMLElement;
+      if (parentElement?.closest('.highlight-mark, .highlight-toolbar, .highlight-summary')) {
+        return;
+      }
+
+      const rect = range.getBoundingClientRect();
+      const previewRect = preview.getBoundingClientRect();
+
+      // Position toolbar above selection (or below if not enough space)
+      const toolbarHeight = 50;
+      const spaceAbove = rect.top - previewRect.top;
+      const spaceBelow = previewRect.bottom - rect.bottom;
+
+      let y = rect.top + window.scrollY - toolbarHeight - 8;
+      if (spaceAbove < toolbarHeight + 16 && spaceBelow > toolbarHeight + 16) {
+        y = rect.bottom + window.scrollY + 8;
+      }
+
+      const x = rect.left + rect.width / 2 - 100; // Center toolbar
+
+      setHighlightToolbar({
+        visible: true,
+        position: { x, y },
+        selection,
+      });
+    }
+
+    function handleMouseUp() {
+      // Delay to allow selection to complete
+      setTimeout(handleSelectionChange, 10);
+    }
+
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.highlight-toolbar')) {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed) {
+          // Selection still active, keep toolbar
+          return;
+        }
+        setHighlightToolbar({ visible: false, position: { x: 0, y: 0 }, selection: null });
+      }
+    }
+
+    preview.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('mousedown', handleClickOutside);
+
+    return () => {
+      preview.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [previewRef.current]);
+
+  // Handle clicks on existing highlights to remove them
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+
+    function handleHighlightClick(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      const highlightMark = target.closest('.highlight-mark') as HTMLElement;
+      
+      if (highlightMark) {
+        const highlightId = highlightMark.dataset.highlightId;
+        if (highlightId) {
+          // Show confirmation or just remove
+          if (confirm('Remove this highlight?')) {
+            removeHighlight(highlightId);
+          }
+        }
+      }
+    }
+
+    preview.addEventListener('click', handleHighlightClick);
+    return () => preview.removeEventListener('click', handleHighlightClick);
+  }, [previewRef.current]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -732,6 +886,80 @@ export default function MarkdownConverter() {
     toast("Document deleted");
   }
 
+  // --- Highlight helpers ---
+
+  function addHighlight(type: Highlight["type"]) {
+    const selection = highlightToolbar.selection;
+    if (!selection || selection.isCollapsed) return;
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) return;
+
+    // Get selection position in the full rendered text
+    const range = selection.getRangeAt(0);
+    const preClone = previewRef.current?.cloneNode(true) as HTMLElement;
+    if (!preClone) return;
+
+    // Get full text content
+    const fullText = preClone.textContent || "";
+    
+    // Find approximate position (this is a simplified approach)
+    // For production, you'd want more robust text location
+    const beforeRange = range.cloneRange();
+    beforeRange.selectNodeContents(previewRef.current!);
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+    const selectionStart = beforeRange.toString().length;
+
+    const textFragment = createTextFragment(fullText, selectedText, selectionStart);
+
+    const newHighlight: Highlight = {
+      id: crypto.randomUUID(),
+      type,
+      selectedText,
+      textFragment,
+      createdAt: Date.now(),
+    };
+
+    setHighlights((prev) => [...prev, newHighlight]);
+    
+    // Clear selection and toolbar
+    selection.removeAllRanges();
+    setHighlightToolbar({ visible: false, position: { x: 0, y: 0 }, selection: null });
+    
+    toast(`Added ${type} highlight`);
+  }
+
+  function removeHighlight(id: string) {
+    setHighlights((prev) => prev.filter((h) => h.id !== id));
+    toast("Highlight removed");
+  }
+
+  function clearAllHighlights() {
+    if (highlights.length === 0) return;
+    
+    if (confirm(`Remove all ${highlights.length} highlights?`)) {
+      setHighlights([]);
+      clearHighlights();
+      toast("All highlights cleared");
+    }
+  }
+
+  function scrollToHighlight(id: string) {
+    const preview = previewRef.current;
+    if (!preview) return;
+
+    const mark = preview.querySelector(`[data-highlight-id="${id}"]`);
+    if (mark) {
+      mark.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      
+      // Flash effect
+      mark.classList.add('ring-2', 'ring-primary');
+      setTimeout(() => {
+        mark.classList.remove('ring-2', 'ring-primary');
+      }, 1500);
+    }
+  }
+
   // --- Other helpers ---
 
   function toggleTheme() {
@@ -890,6 +1118,8 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
 
   function clearAll() {
     setInput("");
+    setHighlights([]);
+    clearHighlights();
   }
 
   function onDragOver(e: React.DragEvent) {
@@ -1050,7 +1280,7 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
     }
     
     try {
-      const shareUrl = createShareLink(content, null, "none");
+      const shareUrl = createShareLink(content, null, "none", highlights.length > 0 ? highlights : undefined);
       
       if (shareUrl.length > 12000) {
         toast.error("Content too large for URL sharing. Try shortening to under ~1,500 words.");
@@ -1089,7 +1319,8 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
       const shareUrl = createShareLink(
         content,
         sharePassword.trim() || null,
-        shareTTL
+        shareTTL,
+        highlights.length > 0 ? highlights : undefined
       );
       
       if (shareUrl.length > 12000) {
@@ -1118,6 +1349,10 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
     
     if (result.success && result.payload) {
       setInput(result.payload.content);
+      // Load shared highlights if present
+      if (result.payload.highlights && result.payload.highlights.length > 0) {
+        setHighlights(result.payload.highlights);
+      }
       setPendingPasswordPrompt(null);
       setPasswordInput("");
       window.history.replaceState(null, '', window.location.pathname);
@@ -1397,6 +1632,25 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
                   </Select>
                 </div>
                 <div className="flex items-center gap-1">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant={showHighlightsPanel ? "default" : "ghost"}
+                        size="xs"
+                        onClick={() => setShowHighlightsPanel(!showHighlightsPanel)}
+                        className="relative"
+                      >
+                        <HighlighterIcon className="size-3" />
+                        {highlights.length > 0 && (
+                          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
+                            {highlights.length}
+                          </span>
+                        )}
+                        <span className="hidden sm:inline">Highlights</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Highlights panel</TooltipContent>
+                  </Tooltip>
                   {toc.length >= 2 && (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -1530,8 +1784,13 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
               <div
                 ref={previewRef}
                 className="markdown-preview min-h-0 flex-1 overflow-y-auto p-4"
-                dangerouslySetInnerHTML={{ __html: renderedHtml }}
-              />
+              >
+                {/* Highlight Summary */}
+                <HighlightSummary highlights={highlights} />
+                
+                {/* Rendered content */}
+                <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />
+              </div>
               
               {/* Inject theme CSS for live preview */}
               <style dangerouslySetInnerHTML={{ 
@@ -1992,6 +2251,25 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
             </DialogClose>
           </DialogContent>
         </Dialog>
+
+        {/* Highlight Toolbar */}
+        {highlightToolbar.visible && (
+          <HighlightToolbar
+            position={highlightToolbar.position}
+            onHighlight={addHighlight}
+            onClose={() => setHighlightToolbar({ visible: false, position: { x: 0, y: 0 }, selection: null })}
+          />
+        )}
+
+        {/* Highlights Panel */}
+        <HighlightsPanel
+          open={showHighlightsPanel}
+          onOpenChange={setShowHighlightsPanel}
+          highlights={highlights}
+          onRemove={removeHighlight}
+          onClearAll={clearAllHighlights}
+          onScrollTo={scrollToHighlight}
+        />
       </div>
     </TooltipProvider>
   );

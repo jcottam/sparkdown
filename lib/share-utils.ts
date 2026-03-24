@@ -1,8 +1,11 @@
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from "lz-string";
 import CryptoJS from "crypto-js";
 
+import type { Highlight } from "./highlight-utils";
+
 export interface SharePayload {
   content: string;
+  highlights?: Highlight[];
   expires: number | null;
 }
 
@@ -26,7 +29,8 @@ export function getTTLMilliseconds(ttl: TTLOption): number | null {
 export function createShareLink(
   content: string,
   password: string | null,
-  ttl: TTLOption
+  ttl: TTLOption,
+  highlights?: Highlight[]
 ): string {
   const ttlMs = getTTLMilliseconds(ttl);
   const expires = ttlMs ? Date.now() + ttlMs : null;
@@ -35,6 +39,11 @@ export function createShareLink(
     content,
     expires,
   };
+
+  // Include highlights if provided
+  if (highlights && highlights.length > 0) {
+    payload.highlights = highlights;
+  }
 
   const payloadJson = JSON.stringify(payload);
 
