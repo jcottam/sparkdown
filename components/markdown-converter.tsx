@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { marked } from "marked";
 import matter from "gray-matter";
 import { createHighlighter, type Highlighter } from "shiki";
@@ -40,7 +40,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
   Tooltip,
@@ -49,13 +48,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   Sun,
   Moon,
   Copy,
   Download,
   Trash2,
   ExternalLink,
-  Save,
   Eye,
   FileText,
   Plus,
@@ -67,6 +70,19 @@ import {
   Edit,
   FileDown,
   Highlighter as HighlighterIcon,
+  Type,
+  Heading1,
+  Heading2,
+  Heading3,
+  ListOrdered,
+  ListChecks,
+  Quote,
+  Code,
+  Minus,
+  Table,
+  Sigma,
+  GitBranch,
+  Save,
 } from "lucide-react";
 import {
   THEMES,
@@ -103,6 +119,135 @@ interface TocItem {
 }
 
 type PaneLayout = "split" | "editor-only" | "preview-only";
+
+interface SlashCommand {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  group: string;
+  keywords: string[];
+  execute: (lineText: string) => { replacement: string; cursorOffset: number };
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  {
+    id: "paragraph",
+    label: "Paragraph",
+    icon: Type,
+    group: "Style",
+    keywords: ["paragraph", "text", "plain"],
+    execute: (lineText) => {
+      const stripped = lineText.replace(
+        /^(#{1,6}\s|>\s|- \[[ x]\]\s|- |\d+\.\s)/,
+        "",
+      );
+      return { replacement: stripped || "", cursorOffset: -1 };
+    },
+  },
+  {
+    id: "h1",
+    label: "Heading 1",
+    icon: Heading1,
+    group: "Style",
+    keywords: ["heading", "h1", "title"],
+    execute: () => ({ replacement: "# ", cursorOffset: -1 }),
+  },
+  {
+    id: "h2",
+    label: "Heading 2",
+    icon: Heading2,
+    group: "Style",
+    keywords: ["heading", "h2", "subtitle"],
+    execute: () => ({ replacement: "## ", cursorOffset: -1 }),
+  },
+  {
+    id: "h3",
+    label: "Heading 3",
+    icon: Heading3,
+    group: "Style",
+    keywords: ["heading", "h3"],
+    execute: () => ({ replacement: "### ", cursorOffset: -1 }),
+  },
+  {
+    id: "bullet",
+    label: "Bullet List",
+    icon: List,
+    group: "Style",
+    keywords: ["bullet", "list", "unordered", "ul"],
+    execute: () => ({ replacement: "- ", cursorOffset: -1 }),
+  },
+  {
+    id: "numbered",
+    label: "Numbered List",
+    icon: ListOrdered,
+    group: "Style",
+    keywords: ["numbered", "list", "ordered", "ol"],
+    execute: () => ({ replacement: "1. ", cursorOffset: -1 }),
+  },
+  {
+    id: "task",
+    label: "Task List",
+    icon: ListChecks,
+    group: "Style",
+    keywords: ["task", "todo", "checkbox", "check"],
+    execute: () => ({ replacement: "- [ ] ", cursorOffset: -1 }),
+  },
+  {
+    id: "blockquote",
+    label: "Blockquote",
+    icon: Quote,
+    group: "Style",
+    keywords: ["blockquote", "quote"],
+    execute: () => ({ replacement: "> ", cursorOffset: -1 }),
+  },
+  {
+    id: "code",
+    label: "Code Block",
+    icon: Code,
+    group: "Style",
+    keywords: ["code", "block", "fence", "snippet"],
+    execute: () => ({ replacement: "```\n\n```", cursorOffset: 4 }),
+  },
+  {
+    id: "hr",
+    label: "Horizontal Rule",
+    icon: Minus,
+    group: "Insert",
+    keywords: ["horizontal", "rule", "divider", "line", "hr"],
+    execute: () => ({ replacement: "---\n", cursorOffset: -1 }),
+  },
+  {
+    id: "table",
+    label: "Table",
+    icon: Table,
+    group: "Insert",
+    keywords: ["table", "grid"],
+    execute: () => ({
+      replacement:
+        "| Column 1 | Column 2 |\n| -------- | -------- |\n| Cell     | Cell     |",
+      cursorOffset: -1,
+    }),
+  },
+  {
+    id: "math",
+    label: "Math Block",
+    icon: Sigma,
+    group: "Insert",
+    keywords: ["math", "latex", "katex", "equation"],
+    execute: () => ({ replacement: "$$\n\n$$", cursorOffset: 3 }),
+  },
+  {
+    id: "mermaid",
+    label: "Mermaid Diagram",
+    icon: GitBranch,
+    group: "Insert",
+    keywords: ["mermaid", "diagram", "chart", "flow", "graph"],
+    execute: () => ({
+      replacement: "```mermaid\ngraph TD\n    A --> B\n```",
+      cursorOffset: 21,
+    }),
+  },
+];
 
 const SHIKI_LANGS = [
   "javascript",
@@ -249,6 +394,8 @@ export default function MarkdownConverter() {
   const [showToc, setShowToc] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [scrollSync, setScrollSync] = useState(true);
+  const [autoSave, setAutoSave] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Feature 2: Themes
   const [selectedTheme, setSelectedTheme] = useState("github");
@@ -265,11 +412,21 @@ export default function MarkdownConverter() {
     selection: Selection | null;
   }>({ visible: false, position: { x: 0, y: 0 }, selection: null });
 
+  // Slash command menu
+  const [slashMenu, setSlashMenu] = useState<{
+    position: { top: number; left: number };
+    filter: string;
+    selectedIndex: number;
+    triggerStart: number;
+  } | null>(null);
+
   const highlighterRef = useRef<Highlighter | null>(null);
   const renderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const isScrollingFromEditor = useRef(false);
   const isScrollingFromPreview = useRef(false);
 
@@ -462,6 +619,9 @@ export default function MarkdownConverter() {
 
     const savedScrollSync = localStorage.getItem("md-scroll-sync");
     if (savedScrollSync === "false") setScrollSync(false);
+
+    const savedAutoSave = localStorage.getItem("md-auto-save");
+    if (savedAutoSave === "false") setAutoSave(false);
 
     // Feature 2: Load selected theme
     const savedTheme = localStorage.getItem("md-selected-theme");
@@ -697,6 +857,31 @@ export default function MarkdownConverter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input, activeDocId, renderedHtml, dark, selectedTheme, paneLayout]);
 
+  // Dismiss slash menu on click outside
+  useEffect(() => {
+    if (!slashMenu) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (
+        slashMenuRef.current &&
+        !slashMenuRef.current.contains(e.target as Node)
+      ) {
+        setSlashMenu(null);
+      }
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    return () => document.removeEventListener("mousedown", handleMouseDown);
+  }, [slashMenu]);
+
+  // Scroll selected slash menu item into view
+  useEffect(() => {
+    if (!slashMenu || !slashMenuRef.current) return;
+    const selected = slashMenuRef.current.querySelector(
+      '[data-selected="true"]',
+    );
+    selected?.scrollIntoView({ block: "nearest" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slashMenu?.selectedIndex]);
+
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
@@ -765,6 +950,273 @@ export default function MarkdownConverter() {
     };
   }, [scrollSync, mounted, paneLayout]);
 
+  // --- Slash command helpers ---
+
+  const getCaretCoordinates = useCallback(() => {
+    const textarea = editorRef.current;
+    const mirror = mirrorRef.current;
+    if (!textarea || !mirror) return { top: 0, left: 0 };
+
+    const style = window.getComputedStyle(textarea);
+    const properties = [
+      "fontFamily",
+      "fontSize",
+      "fontWeight",
+      "letterSpacing",
+      "lineHeight",
+      "paddingTop",
+      "paddingLeft",
+      "paddingRight",
+      "borderTopWidth",
+      "borderLeftWidth",
+      "boxSizing",
+      "whiteSpace",
+      "wordWrap",
+      "overflowWrap",
+      "tabSize",
+      "wordSpacing",
+    ] as const;
+    properties.forEach((prop) => {
+      mirror.style.setProperty(
+        prop.replace(/([A-Z])/g, "-$1").toLowerCase(),
+        style.getPropertyValue(prop.replace(/([A-Z])/g, "-$1").toLowerCase()),
+      );
+    });
+    mirror.style.width = `${textarea.clientWidth}px`;
+    mirror.style.overflowWrap = "break-word";
+    mirror.style.whiteSpace = "pre-wrap";
+
+    const textBeforeCursor = textarea.value.substring(
+      0,
+      textarea.selectionStart,
+    );
+    mirror.textContent = textBeforeCursor;
+
+    const span = document.createElement("span");
+    span.textContent = "\u200b";
+    mirror.appendChild(span);
+
+    const textareaRect = textarea.getBoundingClientRect();
+    const spanRect = span.getBoundingClientRect();
+    const mirrorRect = mirror.getBoundingClientRect();
+
+    return {
+      top:
+        textareaRect.top +
+        (spanRect.top - mirrorRect.top) -
+        textarea.scrollTop +
+        parseInt(style.lineHeight || "20", 10),
+      left:
+        textareaRect.left +
+        (spanRect.left - mirrorRect.left) -
+        textarea.scrollLeft,
+    };
+  }, []);
+
+  const filteredCommands = useMemo(
+    () =>
+      slashMenu
+        ? SLASH_COMMANDS.filter((cmd) => {
+            if (!slashMenu.filter) return true;
+            const q = slashMenu.filter.toLowerCase();
+            return (
+              cmd.label.toLowerCase().includes(q) ||
+              cmd.keywords.some((k) => k.includes(q))
+            );
+          })
+        : [],
+    [slashMenu],
+  );
+
+  const groupedCommands = filteredCommands.reduce<
+    Record<string, SlashCommand[]>
+  >((acc, cmd) => {
+    if (!acc[cmd.group]) acc[cmd.group] = [];
+    acc[cmd.group].push(cmd);
+    return acc;
+  }, {});
+
+  const executeSlashCommand = useCallback(
+    (command: SlashCommand) => {
+      const textarea = editorRef.current;
+      if (!textarea || !slashMenu) return;
+
+      const text = input;
+      const cursorPos = textarea.selectionStart;
+      const lineStart = text.lastIndexOf("\n", slashMenu.triggerStart - 1) + 1;
+      const lineEnd = text.indexOf("\n", cursorPos);
+      const actualLineEnd = lineEnd === -1 ? text.length : lineEnd;
+      const currentLineText = text.substring(lineStart, actualLineEnd);
+
+      const { replacement, cursorOffset } = command.execute(currentLineText);
+
+      const newText =
+        text.substring(0, lineStart) +
+        replacement +
+        text.substring(actualLineEnd);
+
+      setInput(newText);
+      setSlashMenu(null);
+
+      requestAnimationFrame(() => {
+        textarea.focus();
+        const newCursorPos =
+          cursorOffset === -1
+            ? lineStart + replacement.length
+            : lineStart + cursorOffset;
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+      });
+    },
+    [input, slashMenu],
+  );
+
+  const handleEditorChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newValue = e.target.value;
+      const cursorPos = e.target.selectionStart;
+      setInput(newValue);
+
+      const lineStart = newValue.lastIndexOf("\n", cursorPos - 1) + 1;
+      const lineBeforeCursor = newValue.substring(lineStart, cursorPos);
+
+      const slashMatch = lineBeforeCursor.match(/^\s*\/(\S*)$/);
+
+      if (slashMatch) {
+        const pos = getCaretCoordinates();
+        setSlashMenu({
+          position: pos,
+          filter: slashMatch[1],
+          selectedIndex: 0,
+          triggerStart: lineStart,
+        });
+      } else if (slashMenu) {
+        setSlashMenu(null);
+      }
+    },
+    [slashMenu, getCaretCoordinates],
+  );
+
+  const handleEditorKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashMenu) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSlashMenu((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  selectedIndex: Math.min(
+                    prev.selectedIndex + 1,
+                    filteredCommands.length - 1,
+                  ),
+                }
+              : null,
+          );
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSlashMenu((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  selectedIndex: Math.max(prev.selectedIndex - 1, 0),
+                }
+              : null,
+          );
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          if (filteredCommands.length > 0) {
+            executeSlashCommand(
+              filteredCommands[slashMenu.selectedIndex] || filteredCommands[0],
+            );
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSlashMenu(null);
+          return;
+        }
+      }
+
+      if (e.key === "Enter") {
+        const textarea = e.currentTarget;
+        const { selectionStart } = textarea;
+        const text = textarea.value;
+        const lineStart = text.lastIndexOf("\n", selectionStart - 1) + 1;
+        const currentLine = text.substring(lineStart, selectionStart);
+
+        const bulletMatch = currentLine.match(/^(\s*)([-*+])\s(.*)$/);
+        const orderedMatch = currentLine.match(/^(\s*)(\d+)\.\s(.*)$/);
+        const taskMatch = currentLine.match(/^(\s*)- \[[ x]\]\s(.*)$/);
+
+        let continuation: string | null = null;
+
+        if (taskMatch) {
+          if (taskMatch[2].trim() === "") {
+            e.preventDefault();
+            const newText =
+              text.substring(0, lineStart) + text.substring(selectionStart);
+            setInput(newText);
+            requestAnimationFrame(() => {
+              textarea.setSelectionRange(lineStart, lineStart);
+            });
+            return;
+          }
+          continuation = `\n${taskMatch[1]}- [ ] `;
+        } else if (bulletMatch) {
+          if (bulletMatch[3].trim() === "") {
+            e.preventDefault();
+            const newText =
+              text.substring(0, lineStart) + text.substring(selectionStart);
+            setInput(newText);
+            requestAnimationFrame(() => {
+              textarea.setSelectionRange(lineStart, lineStart);
+            });
+            return;
+          }
+          continuation = `\n${bulletMatch[1]}${bulletMatch[2]} `;
+        } else if (orderedMatch) {
+          if (orderedMatch[3].trim() === "") {
+            e.preventDefault();
+            const newText =
+              text.substring(0, lineStart) + text.substring(selectionStart);
+            setInput(newText);
+            requestAnimationFrame(() => {
+              textarea.setSelectionRange(lineStart, lineStart);
+            });
+            return;
+          }
+          const nextNum = parseInt(orderedMatch[2], 10) + 1;
+          continuation = `\n${orderedMatch[1]}${nextNum}. `;
+        }
+
+        if (continuation) {
+          e.preventDefault();
+          const newText =
+            text.substring(0, selectionStart) +
+            continuation +
+            text.substring(selectionStart);
+          setInput(newText);
+          const newPos = selectionStart + continuation.length;
+          requestAnimationFrame(() => {
+            textarea.setSelectionRange(newPos, newPos);
+          });
+          return;
+        }
+      }
+
+      if (e.key === "Tab") {
+        e.preventDefault();
+        document.execCommand("insertText", false, "  ");
+      }
+    },
+    [slashMenu, filteredCommands, executeSlashCommand],
+  );
+
   // --- Document helpers ---
 
   function saveCurrentDocument() {
@@ -788,6 +1240,34 @@ export default function MarkdownConverter() {
       return updated;
     });
   }
+
+  useEffect(() => {
+    if (!activeDocId || !autoSave) return;
+    setIsSaving(true);
+    const timer = setTimeout(() => {
+      setDocuments((prev) => {
+        const existing = prev.find((d) => d.id === activeDocId);
+        if (existing && existing.content === input) {
+          setIsSaving(false);
+          return prev;
+        }
+        const updated = prev.map((doc) =>
+          doc.id === activeDocId
+            ? {
+                ...doc,
+                content: input,
+                title: extractTitleFromContent(input),
+                updatedAt: Date.now(),
+              }
+            : doc,
+        );
+        writeDocuments(updated);
+        setIsSaving(false);
+        return updated;
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [input, activeDocId, autoSave]);
 
   function createNewDocument() {
     saveCurrentDocument();
@@ -951,9 +1431,11 @@ export default function MarkdownConverter() {
     toast(next ? "Scroll sync enabled" : "Scroll sync disabled");
   }
 
-  function saveNow() {
-    saveCurrentDocument();
-    toast("Saved to browser");
+  function toggleAutoSave() {
+    const next = !autoSave;
+    setAutoSave(next);
+    localStorage.setItem("md-auto-save", String(next));
+    toast(next ? "Auto-save enabled" : "Auto-save disabled");
   }
 
   function extractTitle(): string {
@@ -1083,12 +1565,6 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
     }
   }
 
-  function clearAll() {
-    setInput("");
-    setHighlights([]);
-    clearHighlights();
-  }
-
   function onDragOver(e: React.DragEvent) {
     e.preventDefault();
     setDragging(true);
@@ -1171,72 +1647,134 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
   return (
     <TooltipProvider>
       <div className="flex h-screen flex-col overflow-hidden">
-        {/* Header */}
-        <header className="relative border-b border-border/60 bg-linear-to-r from-primary/4 via-transparent to-accent/6 no-print">
-          <div className="absolute inset-x-0 bottom-0 h-px bg-linear-to-r from-transparent via-primary/30 to-transparent" />
-          <div className="flex items-center justify-between px-4 py-3 sm:px-6 sm:py-4">
-            <div className="flex flex-col gap-0.5">
-              <h1 className="flex items-center gap-1.5 text-xl font-bold font-mono tracking-tight sm:text-2xl">
-                SPARK
+        {/* Unified toolbar */}
+        <header className="flex h-10 items-center justify-between border-b border-border/60 bg-muted/30 px-2 sm:px-3 no-print">
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setShowDocSheet(true)}
+                >
+                  <FileText className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Documents</TooltipContent>
+            </Tooltip>
+            <div className="mx-0.5 h-4 w-px bg-border/50" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={paneLayout === "split" ? "default" : "ghost"}
+                  size="xs"
+                  onClick={() => changePaneLayout("split")}
+                >
+                  <Columns className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Split ({modKey}+1)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={paneLayout === "editor-only" ? "default" : "ghost"}
+                  size="xs"
+                  onClick={() => changePaneLayout("editor-only")}
+                >
+                  <Edit className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Editor ({modKey}+2)</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={paneLayout === "preview-only" ? "default" : "ghost"}
+                  size="xs"
+                  onClick={() => changePaneLayout("preview-only")}
+                >
+                  <Eye className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Preview ({modKey}+3)</TooltipContent>
+            </Tooltip>
+            <div className="mx-0.5 h-4 w-px bg-border/50" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={scrollSync ? "default" : "ghost"}
+                  size="xs"
+                  onClick={toggleScrollSync}
+                >
+                  <ArrowUpDown className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Scroll sync</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={autoSave ? "default" : "ghost"}
+                  size="xs"
+                  onClick={toggleAutoSave}
+                >
+                  <Save className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Auto-save</TooltipContent>
+            </Tooltip>
+          </div>
+
+          <button
+            onClick={() => setShowDocSheet(true)}
+            className="text-xs font-medium truncate max-w-72 sm:max-w-96 lg:max-w-xl hover:text-foreground/70 transition-colors"
+          >
+            {extractTitle()}
+          </button>
+
+          <div className="flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="xs" onClick={toggleTheme}>
+                  {dark ? (
+                    <Sun className="size-3.5" />
+                  ) : (
+                    <Moon className="size-3.5" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {dark ? "Light mode" : "Dark mode"}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setShowShortcuts(true)}
+                >
+                  <HelpCircle className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Keyboard shortcuts</TooltipContent>
+            </Tooltip>
+            <Button variant="ghost" size="xs" asChild>
+              <a
+                href="https://github.com/jcottam/sparkdown"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="1em"
-                  height="1em"
-                  viewBox="0 0 24 24"
+                  viewBox="0 0 16 16"
+                  className="size-3.5 fill-current"
+                  aria-label="GitHub"
                 >
-                  <path
-                    fill="currentColor"
-                    d="M9 4h6v8h4.84L12 19.84L4.16 12H9z"
-                  />
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
                 </svg>
-              </h1>
-              <p className="text-[13px] font-mono leading-snug text-muted-foreground">
-                Write markdown. Preview, theme, and publish.
-              </p>
-            </div>
-            <div className="flex items-center gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setShowShortcuts(true)}
-                  >
-                    <HelpCircle className="size-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Keyboard shortcuts</TooltipContent>
-              </Tooltip>
-              <Button variant="ghost" size="icon" asChild>
-                <a
-                  href="https://github.com/jcottam/sparkdown"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <svg
-                    viewBox="0 0 16 16"
-                    className="size-4 fill-current"
-                    aria-label="GitHub"
-                  >
-                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
-                  </svg>
-                </a>
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" onClick={toggleTheme}>
-                    {dark ? (
-                      <Sun className="size-4" />
-                    ) : (
-                      <Moon className="size-4" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {dark ? "Light mode" : "Dark mode"}
-                </TooltipContent>
-              </Tooltip>
-            </div>
+              </a>
+            </Button>
           </div>
         </header>
 
@@ -1249,75 +1787,18 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                 paneLayout === "editor-only" ? "flex-1" : "flex-1"
               }`}
             >
-              <div className="flex h-10 items-center justify-between border-b bg-muted text-muted-foreground px-2 no-print">
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => setShowDocSheet(true)}
-                  >
-                    <FileText className="size-3" />
-                    Documents
-                  </Button>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button variant="ghost" size="xs" onClick={saveNow}>
-                        <Save className="size-3" />
-                        <span className="hidden sm:inline">Save</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Save ({modKey}+S)</TooltipContent>
-                  </Tooltip>
-
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button variant="ghost" size="xs">
-                        <Trash2 className="size-3" />
-                        <span className="hidden sm:inline">Clear</span>
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Clear document?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will erase all content in the current document.
-                          This action cannot be undone.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                          variant="destructive"
-                          onClick={clearAll}
-                        >
-                          Clear
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                </div>
-              </div>
-
-              {/* Word/Char/Line count bar */}
-              <div className="flex items-center gap-3 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground no-print">
-                <span className="truncate font-medium text-foreground">
-                  {extractTitle()}
+              <div className="flex h-8 items-center justify-between border-b bg-muted/50 text-muted-foreground px-2 no-print">
+                <span className="text-xs">
+                  {wordCount} words · {charCount} chars · {lineCount} lines
                 </span>
-                <span>·</span>
-                <span>{wordCount} words</span>
-                <span>·</span>
-                <span>{charCount} chars</span>
-                <span>·</span>
-                <span>{lineCount} lines</span>
-                <span className="ml-auto">
-                  {activeDoc
-                    ? `Updated ${relativeTime(activeDoc.updatedAt)}`
-                    : ""}
+                <span className="text-xs">
+                  {autoSave && isSaving ? (
+                    <span className="text-muted-foreground/70">Saving...</span>
+                  ) : activeDoc ? (
+                    relativeTime(activeDoc.updatedAt)
+                  ) : null}
                 </span>
               </div>
-
               <div
                 className="relative min-h-0 flex-1"
                 onDragOver={onDragOver}
@@ -1327,17 +1808,84 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                 <textarea
                   ref={editorRef}
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Tab") {
-                      e.preventDefault();
-                      document.execCommand("insertText", false, "  ");
-                    }
-                  }}
+                  onChange={handleEditorChange}
+                  onKeyDown={handleEditorKeyDown}
                   placeholder={`# Hello World\n\nStart typing your markdown here...\n\n\`\`\`javascript\nfunction hello() {\n  console.log('Syntax highlighting!');\n}\n\`\`\``}
                   className="h-full w-full resize-none overflow-y-auto bg-transparent p-4 font-mono text-sm outline-none placeholder:text-muted-foreground/50"
                   spellCheck={false}
                 />
+
+                {/* Hidden mirror for caret position calculation */}
+                <div
+                  ref={mirrorRef}
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    visibility: "hidden",
+                    height: "auto",
+                    width: "auto",
+                    overflow: "hidden",
+                    pointerEvents: "none",
+                  }}
+                />
+
+                {/* Slash command menu */}
+                {slashMenu && filteredCommands.length > 0 && (
+                  <div
+                    ref={slashMenuRef}
+                    className="fixed z-50 min-w-[220px] max-h-[320px] overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg animate-in fade-in-0 zoom-in-95"
+                    style={{
+                      top: slashMenu.position.top,
+                      left: slashMenu.position.left,
+                    }}
+                  >
+                    {Object.entries(groupedCommands).map(
+                      ([group, commands]) => (
+                        <div key={group}>
+                          <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                            {group}
+                          </div>
+                          {commands.map((cmd) => {
+                            const globalIndex = filteredCommands.indexOf(cmd);
+                            const Icon = cmd.icon;
+                            return (
+                              <button
+                                key={cmd.id}
+                                data-selected={
+                                  globalIndex === slashMenu.selectedIndex
+                                    ? "true"
+                                    : undefined
+                                }
+                                className={`flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-sm transition-colors ${
+                                  globalIndex === slashMenu.selectedIndex
+                                    ? "bg-accent text-accent-foreground"
+                                    : "text-popover-foreground hover:bg-accent/50"
+                                }`}
+                                onMouseDown={(e) => {
+                                  e.preventDefault();
+                                  executeSlashCommand(cmd);
+                                }}
+                                onMouseEnter={() =>
+                                  setSlashMenu((prev) =>
+                                    prev
+                                      ? { ...prev, selectedIndex: globalIndex }
+                                      : null,
+                                  )
+                                }
+                              >
+                                <Icon className="size-4 shrink-0 text-muted-foreground" />
+                                <span>{cmd.label}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ),
+                    )}
+                  </div>
+                )}
+
                 {dragging && (
                   <div className="absolute inset-0 flex items-center justify-center bg-primary/10 backdrop-blur-sm">
                     <p className="text-lg font-medium text-primary">
@@ -1356,12 +1904,54 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                 paneLayout === "preview-only" ? "flex-1" : "flex-1"
               }`}
             >
-              <div className="flex h-10 items-center justify-between border-b bg-muted text-muted-foreground px-4 no-print">
-                <div className="flex items-center gap-2">
-                  <Eye className="size-3.5" />
-                  <span className="text-sm font-medium">Preview</span>
-                </div>
+              <div className="flex h-8 items-center justify-between border-b bg-muted/50 text-muted-foreground px-2 no-print">
                 <div className="flex items-center gap-1">
+                  <Select value={selectedTheme} onValueChange={changeTheme}>
+                    <SelectTrigger className="h-6 w-28 border-0 bg-transparent text-xs shadow-none focus:ring-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {THEMES.map((theme) => (
+                        <SelectItem
+                          key={theme.id}
+                          value={theme.id}
+                          className="text-xs"
+                        >
+                          {theme.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-0.5">
+                  {frontmatterData && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setShowFrontmatter(true)}
+                        >
+                          <Info className="size-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Details</TooltipContent>
+                    </Tooltip>
+                  )}
+                  {toc.length >= 2 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setShowToc(true)}
+                        >
+                          <List className="size-3" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Table of Contents</TooltipContent>
+                    </Tooltip>
+                  )}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -1374,160 +1964,95 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                       >
                         <HighlighterIcon className="size-3" />
                         {highlights.length > 0 && (
-                          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
+                          <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary text-[9px] text-primary-foreground">
                             {highlights.length}
                           </span>
                         )}
-                        <span className="hidden sm:inline">Highlights</span>
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Highlights panel</TooltipContent>
+                    <TooltipContent>Highlights</TooltipContent>
                   </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={scrollSync ? "default" : "ghost"}
-                        size="xs"
-                        onClick={toggleScrollSync}
-                      >
-                        <ArrowUpDown className="size-3" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Scroll sync</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button variant="ghost" size="xs" onClick={copyHTML}>
-                        <Copy className="size-3" />
-                        <span className="hidden sm:inline">Copy HTML</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Copy HTML ({modKey}+Shift+C)
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button variant="ghost" size="xs" onClick={downloadHTML}>
-                        <Download className="size-3" />
-                        <span className="hidden sm:inline">Download</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Download HTML ({modKey}+D)</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button variant="ghost" size="xs" onClick={downloadPDF}>
-                        <FileDown className="size-3" />
-                        <span className="hidden sm:inline">PDF</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Download PDF ({modKey}+Shift+D)
-                    </TooltipContent>
-                  </Tooltip>
-                  <Button variant="ghost" size="xs" onClick={openPreview}>
-                    <ExternalLink className="size-3" />
-                    <span className="hidden sm:inline">Open Full Page</span>
-                  </Button>
-                </div>
-              </div>
-
-              {/* Preview subnav */}
-              <div className="flex items-center gap-3 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground no-print">
-                <Select value={selectedTheme} onValueChange={changeTheme}>
-                  <SelectTrigger className="h-6 w-28 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {THEMES.map((theme) => (
-                      <SelectItem
-                        key={theme.id}
-                        value={theme.id}
-                        className="text-xs"
-                      >
-                        {theme.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="ml-auto flex items-center gap-3">
-                  {frontmatterData && (
-                    <button
-                      onClick={() => setShowFrontmatter(true)}
-                      className="flex items-center gap-1 hover:text-foreground transition-colors"
-                    >
-                      <Info className="size-3" />
-                      Details
-                    </button>
-                  )}
-                  {toc.length >= 2 && (
-                    <>
-                      {frontmatterData && <span>·</span>}
+                  <div className="mx-0.5 h-3.5 w-px bg-border/50" />
+                  <Popover>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <PopoverTrigger asChild>
+                          <Button variant="ghost" size="xs">
+                            <Download className="size-3" />
+                          </Button>
+                        </PopoverTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent>Export</TooltipContent>
+                    </Tooltip>
+                    <PopoverContent align="end" className="w-44 p-1">
                       <button
-                        onClick={() => setShowToc(true)}
-                        className="flex items-center gap-1 hover:text-foreground transition-colors"
+                        onClick={copyHTML}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
                       >
-                        <List className="size-3" />
-                        Table of Contents
+                        <Copy className="size-3" /> Copy HTML{" "}
+                        <kbd className="ml-auto text-[10px] text-muted-foreground">
+                          {modKey}⇧C
+                        </kbd>
                       </button>
-                    </>
-                  )}
+                      <button
+                        onClick={downloadHTML}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                      >
+                        <Download className="size-3" /> Download HTML{" "}
+                        <kbd className="ml-auto text-[10px] text-muted-foreground">
+                          {modKey}D
+                        </kbd>
+                      </button>
+                      <button
+                        onClick={downloadPDF}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                      >
+                        <FileDown className="size-3" /> Download PDF{" "}
+                        <kbd className="ml-auto text-[10px] text-muted-foreground">
+                          {modKey}⇧D
+                        </kbd>
+                      </button>
+                      <div className="my-0.5 h-px bg-border" />
+                      <button
+                        onClick={openPreview}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                      >
+                        <ExternalLink className="size-3" /> Open in new tab
+                      </button>
+                    </PopoverContent>
+                  </Popover>
                 </div>
               </div>
 
               {/* Frontmatter dialog */}
               <Dialog open={showFrontmatter} onOpenChange={setShowFrontmatter}>
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>
+                <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden">
+                  <DialogHeader className="px-5 pt-5 pb-4">
+                    <DialogTitle className="text-base leading-snug">
                       {frontmatterData?.title
                         ? String(frontmatterData.title)
                         : "Document Details"}
                     </DialogTitle>
                     {frontmatterData?.description && (
-                      <DialogDescription>
+                      <DialogDescription className="text-sm leading-relaxed mt-1">
                         {String(frontmatterData.description)}
                       </DialogDescription>
                     )}
                   </DialogHeader>
                   {frontmatterData && (
-                    <div className="space-y-3">
+                    <div className="border-t">
                       {frontmatterData.author && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="font-medium text-muted-foreground">
-                            Author
-                          </span>
-                          <span>{String(frontmatterData.author)}</span>
+                        <div className="flex items-baseline justify-between px-5 py-3 border-b border-border/50">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Author</span>
+                          <span className="text-sm">{String(frontmatterData.author)}</span>
                         </div>
                       )}
                       {(frontmatterData.pubDate || frontmatterData.date) && (
-                        <div className="flex items-center gap-2 text-sm">
-                          <span className="font-medium text-muted-foreground">
-                            Date
+                        <div className="flex items-baseline justify-between px-5 py-3 border-b border-border/50">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Date</span>
+                          <span className="text-sm">
+                            {formatDate(frontmatterData.pubDate || frontmatterData.date)}
                           </span>
-                          <span>
-                            {formatDate(
-                              frontmatterData.pubDate || frontmatterData.date,
-                            )}
-                          </span>
-                        </div>
-                      )}
-                      {Array.isArray(frontmatterData.tags) && (
-                        <div className="space-y-1.5">
-                          <span className="text-sm font-medium text-muted-foreground">
-                            Tags
-                          </span>
-                          <div className="flex flex-wrap gap-1.5">
-                            {(frontmatterData.tags as string[]).map((tag) => (
-                              <span
-                                key={tag}
-                                className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
-                              >
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
                         </div>
                       )}
                       {Object.entries(frontmatterData)
@@ -1536,20 +2061,31 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                             !["title", "author", "pubDate", "date", "description", "tags"].includes(key),
                         )
                         .map(([key, value]) => (
-                          <div key={key} className="flex items-center gap-2 text-sm">
-                            <span className="font-medium text-muted-foreground capitalize">
-                              {key}
-                            </span>
-                            <span>{String(value)}</span>
+                          <div
+                            key={key}
+                            className="flex items-baseline justify-between px-5 py-3 border-b border-border/50"
+                          >
+                            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{key}</span>
+                            <span className="text-sm">{String(value)}</span>
                           </div>
                         ))}
+                      {Array.isArray(frontmatterData.tags) && frontmatterData.tags.length > 0 && (
+                        <div className="px-5 py-3">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Tags</span>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {(frontmatterData.tags as string[]).map((tag) => (
+                              <span
+                                key={tag}
+                                className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
-                  <DialogClose asChild>
-                    <Button variant="outline" className="mt-2">
-                      Close
-                    </Button>
-                  </DialogClose>
                 </DialogContent>
               </Dialog>
 
@@ -1575,73 +2111,16 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
           )}
         </div>
 
-        {/* Footer toolbar */}
-        <footer className="flex flex-wrap items-center gap-2 border-t px-4 py-2 sm:px-6 no-print">
-          {/* Feature 3: Pane layout controls */}
-          <div className="flex items-center gap-1 border-r pr-2">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={paneLayout === "split" ? "default" : "ghost"}
-                  size="xs"
-                  onClick={() => changePaneLayout("split")}
-                >
-                  <Columns className="size-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Split ({modKey}+1)</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={paneLayout === "editor-only" ? "default" : "ghost"}
-                  size="xs"
-                  onClick={() => changePaneLayout("editor-only")}
-                >
-                  <Edit className="size-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Editor only ({modKey}+2)</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={paneLayout === "preview-only" ? "default" : "ghost"}
-                  size="xs"
-                  onClick={() => changePaneLayout("preview-only")}
-                >
-                  <Eye className="size-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Preview only ({modKey}+3)</TooltipContent>
-            </Tooltip>
-          </div>
-
-          <div className="flex-1" />
-
-          <span className="text-xs text-muted-foreground">
-            Built by{" "}
-            <a
-              href="https://johnryancottam.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-foreground hover:underline"
-            >
-              John Ryan Cottam
-            </a>
-          </span>
-        </footer>
-
         {/* TOC Sheet */}
         <Sheet open={showToc} onOpenChange={setShowToc}>
-          <SheetContent side="right" className="flex flex-col">
-            <SheetHeader>
-              <SheetTitle>Table of Contents</SheetTitle>
-              <SheetDescription>
+          <SheetContent side="right" className="flex flex-col gap-0">
+            <SheetHeader className="pr-10">
+              <SheetTitle className="flex items-center gap-1.5"><List className="size-4" />Contents</SheetTitle>
+              <SheetDescription className="sr-only">
                 {toc.length} heading{toc.length !== 1 ? "s" : ""}
               </SheetDescription>
             </SheetHeader>
-            <nav className="flex-1 overflow-y-auto -mx-2 px-2 space-y-0.5">
+            <nav className="flex-1 overflow-y-auto border-t">
               {toc.map((item) => (
                 <button
                   key={item.id}
@@ -1649,8 +2128,12 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                     scrollToHeading(item.id);
                     setShowToc(false);
                   }}
-                  className="block w-full rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                  style={{ paddingLeft: `${(item.level - 1) * 16 + 12}px` }}
+                  className={`block w-full border-b border-border/40 px-4 py-2 text-left transition-colors hover:bg-muted/50 ${
+                    item.level === 1
+                      ? "text-[13px] font-medium text-foreground"
+                      : "text-[13px] text-muted-foreground"
+                  }`}
+                  style={{ paddingLeft: `${(item.level - 1) * 14 + 16}px` }}
                 >
                   {item.text}
                 </button>
@@ -1661,38 +2144,38 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
 
         {/* Documents Sheet */}
         <Sheet open={showDocSheet} onOpenChange={setShowDocSheet}>
-          <SheetContent side="left" className="flex flex-col">
-            <SheetHeader>
-              <div className="flex items-center justify-between">
-                <SheetTitle>Documents</SheetTitle>
-                <Button variant="outline" size="xs" onClick={createNewDocument}>
-                  <Plus className="size-3" />
-                  New
-                </Button>
-              </div>
-              <SheetDescription>
+          <SheetContent side="left" className="flex flex-col gap-0">
+            <SheetHeader className="pr-10">
+              <SheetTitle className="flex items-center gap-1.5">
+                <FileText className="size-4" />
+                Documents
+              </SheetTitle>
+              <SheetDescription className="sr-only">
                 {documents.length} document{documents.length !== 1 ? "s" : ""}{" "}
                 saved
               </SheetDescription>
             </SheetHeader>
-            <div className="flex-1 overflow-y-auto -mx-2">
+            <div className="px-4 pb-3">
+              <Button
+                variant="outline"
+                size="xs"
+                className="w-full"
+                onClick={createNewDocument}
+              >
+                <Plus className="size-3" />
+                New document
+              </Button>
+            </div>
+            <div className="flex-1 overflow-y-auto border-t">
               {documents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-center px-4">
                   <FileText className="size-8 text-muted-foreground/40" />
                   <p className="text-sm text-muted-foreground">
                     No documents yet
                   </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={createNewDocument}
-                  >
-                    <Plus className="size-3.5" />
-                    Create your first document
-                  </Button>
                 </div>
               ) : (
-                <div className="flex flex-col gap-0.5 px-2">
+                <div className="flex flex-col">
                   {documents
                     .sort((a, b) => b.updatedAt - a.updatedAt)
                     .map((doc) => (
@@ -1707,18 +2190,19 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                             switchDocument(doc.id);
                           }
                         }}
-                        className={`group flex cursor-pointer items-center justify-between rounded-md px-3 py-2.5 text-left transition-colors ${
+                        className={`group flex cursor-pointer items-center justify-between border-b border-border/40 px-4 py-2.5 text-left transition-colors ${
                           doc.id === activeDocId
-                            ? "bg-accent text-accent-foreground"
-                            : "hover:bg-muted"
+                            ? "bg-accent/50 border-l-2 border-l-primary"
+                            : "hover:bg-muted/50"
                         }`}
                       >
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium">
+                          <p className="truncate text-[13px] font-medium">
                             {doc.title}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {relativeTime(doc.updatedAt)}
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            {relativeTime(doc.updatedAt)} ·{" "}
+                            {countWords(doc.content)} words
                           </p>
                         </div>
                         <Button
@@ -1730,7 +2214,7 @@ ${hasMermaid ? MERMAID_SCRIPT : ""}
                             setPendingDeleteId(doc.id);
                           }}
                         >
-                          <Trash2 className="size-3" />
+                          <Trash2 className="size-3 text-muted-foreground" />
                         </Button>
                       </div>
                     ))}
