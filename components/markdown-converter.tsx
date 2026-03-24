@@ -818,6 +818,26 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
   // Feature 1: PDF Export
   async function downloadPDF() {
     const title = extractTitle().replace(/[^a-zA-Z0-9-_ ]/g, "").trim() || "document";
+    
+    // Detect iOS/mobile — html2pdf.js struggles on iOS Safari due to html2canvas limitations
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const isMobile = isIOS || /Android/i.test(navigator.userAgent);
+
+    if (isMobile) {
+      // Mobile fallback: open full page view and trigger print dialog (Save as PDF)
+      toast("Opening print view — use 'Save as PDF' in the print dialog");
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(getFullHTML());
+        w.document.close();
+        setTimeout(() => w.print(), 500);
+      } else {
+        toast.error("Pop-up blocked — allow pop-ups and try again");
+      }
+      return;
+    }
+
     const element = document.createElement("div");
     element.innerHTML = `<div class="markdown-body">${renderedHtml}</div>`;
     
@@ -830,7 +850,7 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
       margin: 15,
       filename: `${title}.pdf`,
       image: { type: 'jpeg' as const, quality: 0.98 },
-      html2canvas: { scale: 2 },
+      html2canvas: { scale: 2, useCORS: true, logging: false },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
       pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
     };
@@ -849,7 +869,14 @@ ${hasMermaid ? MERMAID_SCRIPT : ''}
       toast(`Downloaded ${title}.pdf`);
     } catch (err) {
       console.error("PDF generation error:", err);
-      toast.error("Failed to generate PDF");
+      // Fallback to print dialog on desktop too
+      toast("PDF generation failed — opening print view instead");
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(getFullHTML());
+        w.document.close();
+        setTimeout(() => w.print(), 500);
+      }
     }
   }
 
